@@ -30,16 +30,23 @@ class MessengerClient:
         self.certs = {}
 
     '''
-    Generates a Private Key and Public Key using x25519, saves both, and sends over the public key.
+    Generates a Private Key and Public Key using x25519, saves both, and sends over the name of the messenger, along with the public key.
     '''
     def generateCertificate(self):
         self.private_key = x25519.X25519PrivateKey.generate()
         self.public_key = self.private_key.public_key()
-        return self.public_key
+        return self.name, self.public_key
 
+    '''
+    Uses "Verify" to check to see if the certificate was signed by the server.
+    '''
     def receiveCertificate(self, certificate, signature):
-        raise Exception("not implemented!")
-        return
+        try:
+            self.server_signing_pk.verify(signature, certificate[1], ec.ECDSA(hashes.SHA256()))
+        except:
+            print("CANNOT VERIFY SIGNATURE")
+        self.conns.add(certificate[0])
+        self.certs.add(certificate[1])
 
     def sendMessage(self, name, message):
         raise Exception("not implemented!")
