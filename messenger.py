@@ -15,10 +15,10 @@ class MessengerServer:
         return
 
     '''
-    Hash and Sign the Client's public key using the server_signing_key using ECDSA, and return it.
+    Hash and Sign the Client's public key using the server_signing_key using ECDSA, and return it, along with the name in front.
     '''
     def signCert(self, cert):
-        return self.server_signing_key.sign(cert, ec.ECDSA(hashes.SHA256))
+        return cert[0], self.server_signing_key.sign(cert[1], ec.ECDSA(hashes.SHA256))
 
 class MessengerClient:
 
@@ -38,7 +38,8 @@ class MessengerClient:
         return self.name, self.public_key
 
     '''
-    Uses "Verify" to check to see if the certificate was signed by the server.
+    certificate = name, signed public key of certificate owner.
+    Uses "Verify" to check to see if the certificate was signed by the server. If there are no exceptions, add the name to self.conns, and add the public key to certs.
     '''
     def receiveCertificate(self, certificate, signature):
         try:
@@ -52,6 +53,11 @@ class MessengerClient:
         raise Exception("not implemented!")
         return
 
+    '''
+    name = self.name
+    header = sender's current ratchet public key
+    ciphertext: ciphertext of the sender's message
+    '''
     def receiveMessage(self, name, header, ciphertext):
         raise Exception("not implemented!")
         return
