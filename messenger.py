@@ -6,6 +6,7 @@ from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives import hashes
 from cryptography import HKDF
+from cryptography import hmac
 class MessengerServer:
     def __init__(self, server_signing_key, server_decryption_key):
         self.server_signing_key = server_signing_key
@@ -58,7 +59,15 @@ class MessengerClient:
             print("CANNOT VERIFY SIGNATURE")
         self.certs[certificate[0]] = certificate[1]#adds to dictionary the name, pointing to it's corresponding public key
         #we can generate the shared key when we need it later.
-        
+    
+    '''
+    Returns: 64 bytes, 32 byte root key, 32 byte chain key
+    '''
+    def KDF_CK(ck):
+        h = hmac.HMAC(ck, hashes.SHA256)
+        h.update(0x01)
+
+    
     '''
     rk: root key
     dh_out: previous dh_out from the previous operation of kdf using DH_output as "in" and chain key as "key"
