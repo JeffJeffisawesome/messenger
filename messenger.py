@@ -17,7 +17,7 @@ class MessengerServer:
 
     '''
     cert: name, public key
-
+    
     Hash and Sign the Client's public key using the server_signing_key using ECDSA, and return it.
 
     Returns: Signature of public Key
