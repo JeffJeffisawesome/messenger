@@ -7,6 +7,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives import hashes
 from cryptography import HKDF
 from cryptography import hmac
+from cryptography import aesgcm
 class MessengerServer:
     def __init__(self, server_signing_key, server_decryption_key):
         self.server_signing_key = server_signing_key
@@ -61,12 +62,77 @@ class MessengerClient:
         #we can generate the shared key when we need it later.
     
     '''
-    Returns: 64 bytes, 32 byte root key, 32 byte chain key
+    Creates a new message header containing the DH ratchet public key form the key pair in dh_pair, previous chain length pn, and the message number n
+    '''
+    def HEADER(dh_pair, pn, n):
+        dh = dh_pair.public_key()
+        return dh, pn, n
+
+    '''
+    NOTE: In the original signal spec, 'state' is synonymous with our self.conns[name]
+    The original signal spec did not account for messaging to multiple people, so we also
+    need to add the 'name' parameter to the next following functions to account for it.
+
+    Additionally, AD byte sequence is discarded, as written in spec
+    '''
+
+    def RatchetEncrypt(self, name, plaintext):
+        self.conns[name]['CKs'], mk = self.KDF_CK(self.conns[name]['CKs'])
+        header = self.HEADER(self.conns[name]['DHs'], self.conns[name]['PN'], self.conns[name]['Ns'])
+        self.conns[name]['Ns'] += 1
+        return header, aesgcm.encrypt(mk, plaintext, header)
+
+    '''
+    NOTE: Commented out the functions for checking skipped message keys
+    Apparently those don't need to be accounted for. Can delete later.
+    
+    name: we need the name to access. self.conns[name] dict
+    header: message header:
+    ciphertext: ciphertext
+
+    returns: Original message, using aesgcm.decrypt
+
+    See Section 3.5
+    '''
+    def RatchetDecrypt(self, name, header, ciphertext):
+        '''plaintext = self.TrySkippedMessageKeys(header, name, header, ciphertext)
+        if plaintext != None:
+            return plaintext
+        if header.dh != self.conns[name]['DHr']:
+            SkipMessageKeys'''
+        self.conns[name]['CKr'], mk = self.KDF_CK(self.conns[name]['CKr'])
+        self.conns[name]['Nr'] += 1
+        return aesgcm.decrypt(mk, ciphertext, header)
+    def DHRatchet(self, name, header):
+        self.conns[name]['PN'] = self.conns[name]['Ns']
+        self.conns[name]['Ns'] = 0
+        self.conns[name]['Nr'] = 0
+        self.conns[name]['DHr'] = header.dh
+        self.conns[name]['RK'], self.conns[name]['CKr'] = self.KDF_RK(self.conns[name]['RK'], self.conns[name]['DHs'].exchange(self.conns[name]['DHr']))
+        self.conns[name]['DHs'] = X25519PrivateKey.generate()
+        self.conns[name]['RK'], self.conns[name]['CKs'] = self.KDF_RK(self.conns[name]['RK'], self.conns[name]['DHs'].exchange(self.conns[name]['DHr']))
+    '''
+    def TrySkippedMessageKeys(self, name, header, ciphertext):
+        if (header.dh, header.n) in self.conns[name]['MKSKIPPED']:
+            mk = self.conns[name]['MKSKIPPED'][header.dh, header.n]
+            del self.conns[name]['MKSKIPPED'][header.dh, header.n]
+            return aesgcm.decrypt(mk, ciphertext, header)
+        else:
+            return None
+    
+    def SkipMessageKeys(self, name, until):
+            if self.conns[name]['Nr'] + 
+    '''
+    '''
+    Returns: 64 bytes, 32 byte message key, 32 byte chain key
     '''
     def KDF_CK(ck):
         h = hmac.HMAC(ck, hashes.SHA256)
         h.update(0x01)
-
+        mk = h.finalize()
+        h.update(0x02)
+        ck = h.finalize()
+        return mk, ck
     
     '''
     rk: root key
