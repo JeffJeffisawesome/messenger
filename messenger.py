@@ -1,13 +1,16 @@
+from aifc import Error
 import os
 import pickle
 import string
 import cryptography
-from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 from cryptography.hazmat.primitives.asymmetric import ec
-from cryptography.hazmat.primitives import hashes
-from cryptography import HKDF
-from cryptography import hmac
-from cryptography import aesgcm
+from cryptography.hazmat.primitives import hashes, hmac
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+from cryptography.hazmat.primitives import serialization
+global MAX_SKIP
+MAX_SKIP = 10
 class MessengerServer:
     def __init__(self, server_signing_key, server_decryption_key):
         self.server_signing_key = server_signing_key
@@ -25,7 +28,11 @@ class MessengerServer:
     Returns: Signature of public Key
     '''
     def signCert(self, cert):
-        return self.server_signing_key.sign(cert[1], ec.ECDSA(hashes.SHA256))
+        public_key_bytes = cert[1].public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo
+    )
+        return self.server_signing_key.sign(public_key_bytes, ec.ECDSA(hashes.SHA256()))
 
 class MessengerClient:
 
@@ -37,11 +44,11 @@ class MessengerClient:
         self.certs = {}
 
     '''
-    Generates a Private Key and Public Key using x25519, saves both, and sends over the name of the messenger, along with the public key.
+    Generates a Private Key and Public Key using p-256, saves both, and sends over the name of the messenger, along with the public key.
     Returns: Name, Public Key
     '''
     def generateCertificate(self):
-        self.private_key = X25519PrivateKey.generate()
+        self.private_key = ec.generate_private_key(ec.SECP256R1())
         self.public_key = self.private_key.public_key()
         return self.name, self.public_key
 
@@ -54,17 +61,21 @@ class MessengerClient:
     Returns: Nothing
     '''
     def receiveCertificate(self, certificate, signature):
+        public_key_bytes = certificate[1].public_bytes(
+            encoding=serialization.Encoding.PEM,  # Must match the encoding used in signCert
+            format=serialization.PublicFormat.SubjectPublicKeyInfo
+        )
         try:
-            self.server_signing_pk.verify(signature, certificate[1], ec.ECDSA(hashes.SHA256()))
+            self.server_signing_pk.verify(signature, public_key_bytes, ec.ECDSA(hashes.SHA256()))
         except:
-            print("CANNOT VERIFY SIGNATURE")
+            raise("CANNOT VERIFY SIGNATURE")
         self.certs[certificate[0]] = certificate[1]#adds to dictionary the name, pointing to it's corresponding public key
         #we can generate the shared key when we need it later.
     
     '''
     Creates a new message header containing the DH ratchet public key form the key pair in dh_pair, previous chain length pn, and the message number n
     '''
-    def HEADER(dh_pair, pn, n):
+    def HEADER(self, dh_pair, pn, n):
         dh = dh_pair.public_key()
         return dh, pn, n
 
@@ -80,8 +91,18 @@ class MessengerClient:
         self.conns[name]['CKs'], mk = self.KDF_CK(self.conns[name]['CKs'])
         header = self.HEADER(self.conns[name]['DHs'], self.conns[name]['PN'], self.conns[name]['Ns'])
         self.conns[name]['Ns'] += 1
-        return header, aesgcm.encrypt(mk, plaintext, header)
+        aesgcm = AESGCM(mk)
+        serialized_header = header[0].public_bytes(encoding=serialization.Encoding.PEM, format=serialization.PublicFormat.SubjectPublicKeyInfo)
+        return header, aesgcm.encrypt(bytes(12), bytes(plaintext, 'ascii'), serialized_header)
 
+    def SkipMessageKeys(self, name, until):
+        if self.conns[name]['Nr'] + MAX_SKIP < until:
+            raise Error()
+        if self.conns[name]['CKr'] != None:
+            while self.conns[name]['Nr'] < until:
+                self.conns[name]['CKr'], mk = self.KDF_CK(self.conns[name]['CKr'])
+                self.conns[name]['MKSKIPPED'][self.conns[name]['DHr'], self.conns[name]['Nr']] = mk
+                self.conns[name]['Nr'] += 1
     '''
     NOTE: Commented out the functions for checking skipped message keys
     Apparently those don't need to be accounted for. Can delete later.
@@ -98,40 +119,38 @@ class MessengerClient:
         '''plaintext = self.TrySkippedMessageKeys(header, name, header, ciphertext)
         if plaintext != None:
             return plaintext
-        if header.dh != self.conns[name]['DHr']:
-            SkipMessageKeys'''
+        '''
+        if header[0] != self.conns[name]['DHr']:
+            self.SkipMessageKeys(name, header[2])
+            self.DHRatchet(name, header)
         self.conns[name]['CKr'], mk = self.KDF_CK(self.conns[name]['CKr'])
         self.conns[name]['Nr'] += 1
-        return aesgcm.decrypt(mk, ciphertext, header)
+        aesgcm = AESGCM(mk)
+        serialized_header = header[0].public_bytes(encoding=serialization.Encoding.PEM, format=serialization.PublicFormat.SubjectPublicKeyInfo)
+        return aesgcm.decrypt(bytes(12), ciphertext, serialized_header).decode('ascii')
     def DHRatchet(self, name, header):
         self.conns[name]['PN'] = self.conns[name]['Ns']
         self.conns[name]['Ns'] = 0
         self.conns[name]['Nr'] = 0
-        self.conns[name]['DHr'] = header.dh
-        self.conns[name]['RK'], self.conns[name]['CKr'] = self.KDF_RK(self.conns[name]['RK'], self.conns[name]['DHs'].exchange(self.conns[name]['DHr']))
-        self.conns[name]['DHs'] = X25519PrivateKey.generate()
-        self.conns[name]['RK'], self.conns[name]['CKs'] = self.KDF_RK(self.conns[name]['RK'], self.conns[name]['DHs'].exchange(self.conns[name]['DHr']))
-    '''
-    def TrySkippedMessageKeys(self, name, header, ciphertext):
-        if (header.dh, header.n) in self.conns[name]['MKSKIPPED']:
-            mk = self.conns[name]['MKSKIPPED'][header.dh, header.n]
-            del self.conns[name]['MKSKIPPED'][header.dh, header.n]
-            return aesgcm.decrypt(mk, ciphertext, header)
-        else:
-            return None
-    
-    def SkipMessageKeys(self, name, until):
-            if self.conns[name]['Nr'] + 
-    '''
+        self.conns[name]['DHr'] = header[0]
+        kdf_rk = self.KDF_RK(self.conns[name]['RK'], self.conns[name]['DHs'].exchange(ec.ECDH(), self.conns[name]['DHr']))
+        self.conns[name]['RK'] = kdf_rk[:32]
+        self.conns[name]['CKr'] = kdf_rk[32:]
+        self.conns[name]['DHs'] = ec.generate_private_key(ec.SECP256R1())
+        kdf_rk = self.KDF_RK(self.conns[name]['RK'], self.conns[name]['DHs'].exchange(ec.ECDH(), self.conns[name]['DHr']))
+        self.conns[name]['RK'] = kdf_rk[:32]
+        self.conns[name]['CKr'] = kdf_rk[32:]
+
     '''
     Returns: 64 bytes, 32 byte message key, 32 byte chain key
     '''
-    def KDF_CK(ck):
-        h = hmac.HMAC(ck, hashes.SHA256)
-        h.update(0x01)
+    def KDF_CK(self, ck):
+        h = hmac.HMAC(ck, hashes.SHA256())
+        h.update(b'1')
         mk = h.finalize()
-        h.update(0x02)
-        ck = h.finalize()
+        j = hmac.HMAC(ck, hashes.SHA256())
+        j.update(b'2')
+        ck = j.finalize()
         return mk, ck
     
     '''
@@ -139,8 +158,8 @@ class MessengerClient:
     dh_out: previous dh_out from the previous operation of kdf using DH_output as "in" and chain key as "key"
     Output: 64 bytes, which will be split into 32, 32, one used for the new rk, and for the chain key
     '''
-    def KDF_RK(rk, dh_out):
-        return HKDF(algorithm=hashes.SHA256(), length=64, salt=rk,info=b'KDF_RK_HE').derive(dh_out)
+    def KDF_RK(self, rk, dh_out):
+        return HKDF(algorithm=hashes.SHA256(), length=64, salt=rk,info=b'KDF_RK').derive(dh_out)
 
     '''
     name: receiver's name (who we want to send to)
@@ -151,38 +170,35 @@ class MessengerClient:
     def sendMessage(self, name, message):
         #Initialize, if we haven't sent a message yet
         #Section 3.3 of Signal Doc
-        if self.conns[name] == None:
+        if name not in self.conns:
             #Name -> Another dictionary containing values {DHs, DHr, RK, CKs, CKr, Ns, Nr, PN, MKSKIPPED}
             #To access/edit values, self.conns[name]['DHs'], for example
-            DHs = X25519PrivateKey.generate()
+            DHs = ec.generate_private_key(ec.SECP256R1())
             DHr = self.certs[name] #Receiver's public key
-            shared_key = self.private_key.exchange(DHr)
-            RK, CKs = self.KDF_RK(shared_key, DHs.exchange(DHr))
+            shared_key = self.private_key.exchange(ec.ECDH(), DHr)
+            derived_key = self.KDF_RK(shared_key, DHs.exchange(ec.ECDH(), DHr))
+            RK = derived_key[:32]
+            CKs = derived_key[32:]
             self.conns[name] = {'DHs': DHs, 'DHr': DHr, 'RK': RK, 'CKs': CKs, 'CKr': None, 'Ns': 0, 'Nr': 0, 'PN': 0, 'MKSKIPPED': {}}
-        
-        #TODO
-        raise Exception("not implemented!")
-        return
+        return self.RatchetEncrypt(name, message)
 
     '''
     name: name of the sender
-    header (Section 2.6): contains the message's number in the sending chain (N = 0, 1, 2, ...) and length in the previous sending chain
+    header (Section 2.6): contains the message's dh, pn, n as tuple
     ciphertext: ciphertext
     
     returns: the original message
     '''
     def receiveMessage(self, name, header, ciphertext):
         #Initialized according to section 3.3 of Signal Spec
-        if self.conns[name] == None:
+        if name not in self.conns:
             #To access/edit values, do self.conns[name]['DHs'], for example
             DHs = self.private_key
-            RK = self.private_key.exchange(self.certs[name]) #shared_key
+            RK = self.private_key.exchange(ec.ECDH(), self.certs[name]) #shared_key
             self.conns[name] = {'DHs': DHs, 'DHr': None, 'RK': RK, 'CKs': None, 'CKr': None, 'Ns': 0, 'Nr': 0, 'PN': 0, 'MKSKIPPED': {}}
-        
-
-        #TODO
-        raise Exception("not implemented!")
-        return
+        if header[0] != self.conns[name]['DHr']:
+            self.DHRatchet(name, header)
+        self.RatchetDecrypt(name, header, ciphertext)
 
     def report(self, name, message):
         raise Exception("not implemented!")
