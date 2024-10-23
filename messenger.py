@@ -1,4 +1,3 @@
-from aifc import Error
 import os
 import pickle
 import string
@@ -68,7 +67,7 @@ class MessengerClient:
         try:
             self.server_signing_pk.verify(signature, public_key_bytes, ec.ECDSA(hashes.SHA256()))
         except:
-            raise("CANNOT VERIFY SIGNATURE")
+            raise Exception("CANNOT VERIFY SIGNATURE")
         self.certs[certificate[0]] = certificate[1]#adds to dictionary the name, pointing to it's corresponding public key
         #we can generate the shared key when we need it later.
     
@@ -93,11 +92,12 @@ class MessengerClient:
         self.conns[name]['Ns'] += 1
         aesgcm = AESGCM(mk)
         serialized_header = header[0].public_bytes(encoding=serialization.Encoding.PEM, format=serialization.PublicFormat.SubjectPublicKeyInfo)
-        return header, aesgcm.encrypt(bytes(12), bytes(plaintext, 'ascii'), serialized_header)
+        ct = aesgcm.encrypt(bytes(12), bytes(plaintext, 'ascii'), serialized_header)
+        return header, ct
 
     def SkipMessageKeys(self, name, until):
         if self.conns[name]['Nr'] + MAX_SKIP < until:
-            raise Error()
+            raise Exception()
         if self.conns[name]['CKr'] != None:
             while self.conns[name]['Nr'] < until:
                 self.conns[name]['CKr'], mk = self.KDF_CK(self.conns[name]['CKr'])
@@ -121,13 +121,18 @@ class MessengerClient:
             return plaintext
         '''
         if header[0] != self.conns[name]['DHr']:
-            self.SkipMessageKeys(name, header[2])
+            self.SkipMessageKeys(name, header[1])
             self.DHRatchet(name, header)
+        self.SkipMessageKeys(name, header[2])
         self.conns[name]['CKr'], mk = self.KDF_CK(self.conns[name]['CKr'])
         self.conns[name]['Nr'] += 1
         aesgcm = AESGCM(mk)
         serialized_header = header[0].public_bytes(encoding=serialization.Encoding.PEM, format=serialization.PublicFormat.SubjectPublicKeyInfo)
-        return aesgcm.decrypt(bytes(12), ciphertext, serialized_header).decode('ascii')
+        try:
+            plaintext = aesgcm.decrypt(bytes(12), ciphertext, serialized_header)
+        except: 
+            return None
+        return plaintext.decode('ascii')
     def DHRatchet(self, name, header):
         self.conns[name]['PN'] = self.conns[name]['Ns']
         self.conns[name]['Ns'] = 0
@@ -139,19 +144,19 @@ class MessengerClient:
         self.conns[name]['DHs'] = ec.generate_private_key(ec.SECP256R1())
         kdf_rk = self.KDF_RK(self.conns[name]['RK'], self.conns[name]['DHs'].exchange(ec.ECDH(), self.conns[name]['DHr']))
         self.conns[name]['RK'] = kdf_rk[:32]
-        self.conns[name]['CKr'] = kdf_rk[32:]
+        self.conns[name]['CKs'] = kdf_rk[32:]
 
     '''
     Returns: 64 bytes, 32 byte message key, 32 byte chain key
     '''
     def KDF_CK(self, ck):
         h = hmac.HMAC(ck, hashes.SHA256())
-        h.update(b'1')
+        h.update(b'\x01')
         mk = h.finalize()
         j = hmac.HMAC(ck, hashes.SHA256())
-        j.update(b'2')
-        ck = j.finalize()
-        return mk, ck
+        j.update(b'\x02')
+        new_ck = j.finalize()
+        return mk, new_ck
     
     '''
     rk: root key
@@ -196,9 +201,7 @@ class MessengerClient:
             DHs = self.private_key
             RK = self.private_key.exchange(ec.ECDH(), self.certs[name]) #shared_key
             self.conns[name] = {'DHs': DHs, 'DHr': None, 'RK': RK, 'CKs': None, 'CKr': None, 'Ns': 0, 'Nr': 0, 'PN': 0, 'MKSKIPPED': {}}
-        if header[0] != self.conns[name]['DHr']:
-            self.DHRatchet(name, header)
-        self.RatchetDecrypt(name, header, ciphertext)
+        return self.RatchetDecrypt(name, header, ciphertext)
 
     def report(self, name, message):
         raise Exception("not implemented!")
