@@ -1,7 +1,4 @@
-import os
-import pickle
-import string
-import cryptography
+#Jeffrey Zhu and Shane Li
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives import hashes, hmac
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
@@ -78,14 +75,6 @@ class MessengerClient:
         dh = dh_pair.public_key()
         return dh, pn, n
 
-    '''
-    NOTE: In the original signal spec, 'state' is synonymous with our self.conns[name]
-    The original signal spec did not account for messaging to multiple people, so we also
-    need to add the 'name' parameter to the next following functions to account for it.
-
-    Additionally, AD byte sequence is discarded, as written in spec
-    '''
-
     def RatchetEncrypt(self, name, plaintext):
         self.conns[name]['CKs'], mk = self.KDF_CK(self.conns[name]['CKs'])
         header = self.HEADER(self.conns[name]['DHs'], self.conns[name]['PN'], self.conns[name]['Ns'])
@@ -104,9 +93,6 @@ class MessengerClient:
                 self.conns[name]['MKSKIPPED'][self.conns[name]['DHr'], self.conns[name]['Nr']] = mk
                 self.conns[name]['Nr'] += 1
     '''
-    NOTE: Commented out the functions for checking skipped message keys
-    Apparently those don't need to be accounted for. Can delete later.
-    
     name: we need the name to access. self.conns[name] dict
     header: message header:
     ciphertext: ciphertext
@@ -157,7 +143,6 @@ class MessengerClient:
         j.update(b'\x02')
         new_ck = j.finalize()
         return mk, new_ck
-    
     '''
     rk: root key
     dh_out: previous dh_out from the previous operation of kdf using DH_output as "in" and chain key as "key"
@@ -165,7 +150,6 @@ class MessengerClient:
     '''
     def KDF_RK(self, rk, dh_out):
         return HKDF(algorithm=hashes.SHA256(), length=64, salt=rk,info=b'KDF_RK').derive(dh_out)
-
     '''
     name: receiver's name (who we want to send to)
     message: message
@@ -173,11 +157,7 @@ class MessengerClient:
     returns: header, ciphertext
     '''
     def sendMessage(self, name, message):
-        #Initialize, if we haven't sent a message yet
-        #Section 3.3 of Signal Doc
         if name not in self.conns:
-            #Name -> Another dictionary containing values {DHs, DHr, RK, CKs, CKr, Ns, Nr, PN, MKSKIPPED}
-            #To access/edit values, self.conns[name]['DHs'], for example
             DHs = ec.generate_private_key(ec.SECP256R1())
             DHr = self.certs[name] #Receiver's public key
             shared_key = self.private_key.exchange(ec.ECDH(), DHr)
