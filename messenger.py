@@ -5,6 +5,8 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import dh
+from cryptography.hazmat.backends import default_backend
 global MAX_SKIP
 MAX_SKIP = 10
 class MessengerServer:
@@ -13,8 +15,11 @@ class MessengerServer:
         self.server_decryption_key = server_decryption_key
 
     def decryptReport(self, ct):
-        raise Exception("not implemented!")
-        return
+        shared_secret = self.server_decryption_key.exchange(ec.ECDH(), ct[0])
+        aes_key = HKDF(algorithm=hashes.SHA256(),length=32,salt=None,info=b"elgamal-cca-encryption",backend=default_backend()).derive(shared_secret)
+        aesgcm = AESGCM(aes_key)
+        message = aesgcm.decrypt(bytes(12), ct[1], b'report message')
+        return message.decode('ascii')
 
     '''
     cert: name, public key
@@ -65,8 +70,7 @@ class MessengerClient:
             self.server_signing_pk.verify(signature, public_key_bytes, ec.ECDSA(hashes.SHA256()))
         except:
             raise Exception("CANNOT VERIFY SIGNATURE")
-        self.certs[certificate[0]] = certificate[1]#adds to dictionary the name, pointing to it's corresponding public key
-        #we can generate the shared key when we need it later.
+        self.certs[certificate[0]] = certificate[1]#adds to dictionary the name as key, public key as value
     
     '''
     Creates a new message header containing the DH ratchet public key form the key pair in dh_pair, previous chain length pn, and the message number n
@@ -83,7 +87,7 @@ class MessengerClient:
         serialized_header = header[0].public_bytes(encoding=serialization.Encoding.PEM, format=serialization.PublicFormat.SubjectPublicKeyInfo)
         ct = aesgcm.encrypt(bytes(12), bytes(plaintext, 'ascii'), serialized_header)
         return header, ct
-
+    
     def SkipMessageKeys(self, name, until):
         if self.conns[name]['Nr'] + MAX_SKIP < until:
             raise Exception()
@@ -183,6 +187,16 @@ class MessengerClient:
             self.conns[name] = {'DHs': DHs, 'DHr': None, 'RK': RK, 'CKs': None, 'CKr': None, 'Ns': 0, 'Nr': 0, 'PN': 0, 'MKSKIPPED': {}}
         return self.RatchetDecrypt(name, header, ciphertext)
 
+    '''
+    Diffie-Hellman key exchange
+    '''
     def report(self, name, message):
-        raise Exception("not implemented!")
-        return
+        report_private_key = ec.generate_private_key(ec.SECP256R1())
+        report_public_key = report_private_key.public_key()
+        report_plaintext = name + ": " + message
+        shared_secret = report_private_key.exchange(ec.ECDH(), self.server_encryption_pk)
+        aes_key = HKDF(algorithm=hashes.SHA256(),length=32,salt=None,info=b"elgamal-cca-encryption",backend=default_backend()).derive(shared_secret)
+        aesgcm = AESGCM(aes_key)
+        ct = aesgcm.encrypt(bytes(12), bytes(report_plaintext, 'ascii'), b'report message')
+        full_ct = [report_public_key, ct]
+        return report_plaintext, full_ct
