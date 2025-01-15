@@ -14,6 +14,11 @@ class MessengerServer:
         self.server_signing_key = server_signing_key
         self.server_decryption_key = server_decryption_key
 
+    '''
+    ct: ct[0] = generated public key by reporter, ct[1] = aesgcm encrypted message
+    creates the aesgcm key by creating the shared secret and hashing
+    returns: message
+    '''
     def decryptReport(self, ct):
         shared_secret = self.server_decryption_key.exchange(ec.ECDH(), ct[0])
         aes_key = HKDF(algorithm=hashes.SHA256(),length=32,salt=None,info=b"elgamal-cca-encryption",backend=default_backend()).derive(shared_secret)
@@ -97,7 +102,7 @@ class MessengerClient:
                 self.conns[name]['MKSKIPPED'][self.conns[name]['DHr'], self.conns[name]['Nr']] = mk
                 self.conns[name]['Nr'] += 1
     '''
-    name: we need the name to access. self.conns[name] dict
+    name: we need the name to access self.conns[name] dict
     header: message header:
     ciphertext: ciphertext
 
